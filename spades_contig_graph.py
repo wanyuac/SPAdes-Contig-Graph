@@ -6,6 +6,7 @@ This is a tool to combine the assembly graph and contigs made by the SPAdes
 assembler.  For more information, go to:
 https://github.com/rrwick/spades_contig_graph
 
+Python v2.7.10
 Author: Ryan Wick
 email: rrwick@gmail.com
 """
@@ -21,12 +22,19 @@ from distutils import spawn
 
 def main():
     args = get_arguments()
+    
+    # print file information for troubleshooting
+    print("Graph:" + os.path.basename(args.graph))
+    print("Contigs: " + os.path.basename(args.contigs))
+    print("Paths: " + os.path.basename(args.paths))
 
+    # common stages
     links = load_graph_links(args.graph)
     contigs = load_contigs(args.contigs)
     paths = load_paths(args.paths, links)
     build_graph(contigs, paths, links)
-
+    
+    # extra stages for making a connection-priority contig graph
     if args.connection_priority:
         check_for_blast()
         segment_sequences, segment_depths = load_graph_sequences(args.graph)
@@ -803,8 +811,12 @@ def get_graph_overlap(links, segment_sequences):
             s_2 = segment_sequences[ending_segment]
             possible_overlaps = get_possible_overlaps(s_1, s_2, possible_overlaps)
 
-            # If no overlaps work, then we return 0.
-            # This shouldn't happen, as every SPAdes graph should have overlaps.
+            """
+            If no overlaps work, then we return 0.
+            This shouldn't happen, as every SPAdes graph should have overlaps.
+            Perhaps the k-mer size is too large that there are no connections between nodes at all.
+            Try to reassemble your reads using a smaller k-mer size if this is the case.
+            """
             if len(possible_overlaps) == 0:
                 return 0
 
@@ -1208,14 +1220,18 @@ class Contig:
         Determine the start and end coordinates of each segment in the contig.
         This information is necessary before the contig can be split.
         """
+        
+        # Append a PID to the name of the temporary folder so as to run multiple jobs of this script under the same folder.
+        tmp = 'spades_contig_graph-temp-' + str(os.getpid())
+        
         # Create a temporary directory for doing BLAST searches.
-        if not os.path.exists('spades_contig_graph-temp'):
-            os.makedirs('spades_contig_graph-temp')
+        if not os.path.exists(tmp):
+            os.makedirs(tmp)
 
-        save_sequence_to_fasta_file(self.sequence, self.fullname, 'spades_contig_graph-temp/contig.fasta')
+        save_sequence_to_fasta_file(self.sequence, self.fullname, tmp + '/contig.fasta')
 
         # Create a BLAST database for the contig.
-        makeblastdb_command = ['makeblastdb', '-dbtype', 'nucl', '-in', 'spades_contig_graph-temp/contig.fasta']
+        makeblastdb_command = ['makeblastdb', '-dbtype', 'nucl', '-in', tmp + '/contig.fasta']
         process = subprocess.Popen(makeblastdb_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = process.communicate()
 
@@ -1243,11 +1259,11 @@ class Contig:
             segment_sequence = segment_sequences[segment]
             segment_length = len(segment_sequence)
 
-            save_sequence_to_fasta_file(segment_sequence, segment, 'spades_contig_graph-temp/segment.fasta')
+            save_sequence_to_fasta_file(segment_sequence, segment, tmp + '/segment.fasta')
 
             # BLAST for the segment in the contig
             sys.stdout.flush()
-            blastn_command = ['blastn', '-task', 'blastn', '-db', 'spades_contig_graph-temp/contig.fasta', '-query', 'spades_contig_graph-temp/segment.fasta', '-outfmt', '6 length pident sstart send qstart qend']
+            blastn_command = ['blastn', '-task', 'blastn', '-db', tmp + '/contig.fasta', '-query', tmp + '/segment.fasta', '-outfmt', '6 length pident sstart send qstart qend']
             process = subprocess.Popen(blastn_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out, err = process.communicate()
 
@@ -1292,9 +1308,9 @@ class Contig:
             elif expected_segment_start_in_contig is not None:
                 expected_segment_start_in_contig += (segment_length - graph_overlap)
 
-            os.remove('spades_contig_graph-temp/segment.fasta')
+            os.remove(tmp + '/segment.fasta')
 
-        shutil.rmtree('spades_contig_graph-temp')
+        shutil.rmtree(tmp)
 
         # Now we have to go back and assign contig start/end positions for any
         # gap segments.
